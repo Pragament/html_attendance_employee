@@ -9,6 +9,10 @@
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2">
     </script>
 
+    <!-- BcryptJS for hashing -->
+    <script src="https://cdn.jsdelivr.net/npm/bcryptjs@2.4.3/dist/bcrypt.min.js">
+    </script>
+
     <!-- Chart.js for reports -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js">
     </script>
@@ -778,7 +782,7 @@
 
         <!-- ===== SCREEN: PIN ===== -->
         <div id="screen-pin" class="screen">
-            <button id="pin-back-btn" class="btn btn-ghost btn-sm" style="width:auto;padding:4px 0;margin-bottom:4px;">← Back</button>
+            <button id="pin-back-btn" class="btn btn-ghost btn-sm" style="width:auto;padding:4px 0;margin-bottom:4px;">Change Organization</button>
             <div class="org-display">
                 <div class="org-label">Organization</div>
                 <div class="org-name" id="pin-org-name">—</div>
@@ -816,10 +820,7 @@
                 <video id="selfie-video" autoplay playsinline muted style="display:none;"></video>
                 <img id="selfie-captured" style="display:none;" />
             </div>
-            <div class="selfie-actions">
-                <button id="selfie-toggle-btn" class="btn btn-outline btn-sm">📷 Start Camera</button>
-                <button id="selfie-capture-btn" class="btn btn-primary btn-sm" disabled>Capture</button>
-            </div>
+
 
             <!-- Punch area -->
             <div class="punch-area">
@@ -942,6 +943,9 @@
         (function() {
             'use strict';
 
+            // Global bcrypt reference mapping for BcryptJS loaded via UMD CDN
+            const bcrypt = window.bcrypt || (window.dcodeIO && window.dcodeIO.bcrypt);
+
             // ---- CONSTANTS ----
             const STORAGE_ORG_KEY = 'attendly_org_code';
             const STORAGE_EMP_KEY = 'attendly_employee';
@@ -988,8 +992,6 @@
             const selfieVideo = $('#selfie-video');
             const selfieCaptured = $('#selfie-captured');
             const selfiePlaceholder = $('#selfie-placeholder');
-            const selfieToggleBtn = $('#selfie-toggle-btn');
-            const selfieCaptureBtn = $('#selfie-capture-btn');
 
             // Report
             const reportBackBtn = $('#report-back-btn');
@@ -1127,14 +1129,9 @@
                 dashOrgName.textContent = currentOrg ? currentOrg.org_name : '—';
                 dashEmployeeId.textContent = `ID: ${emp.employee_id}`;
                 showScreen('screen-dash');
-                // Reset selfie
-                stopCamera();
+                // Start camera automatically
                 capturedImageData = null;
-                selfieCaptured.style.display = 'none';
-                selfieVideo.style.display = 'none';
-                selfiePlaceholder.style.display = 'block';
-                selfieCaptureBtn.disabled = true;
-                selfieToggleBtn.textContent = '📷 Start Camera';
+                startCamera();
                 // Check punch status
                 checkPunchStatus();
                 // Load today's data
@@ -1226,69 +1223,50 @@
                 pinError.textContent = '';
 
                 try {
-                    // Use service role key for employee login if available
-                    const serviceKey = getServiceKey();
-                    let client = supabase;
-                    if (serviceKey) {
-                        const s = loadSettings();
-                        if (s && s.url) {
-                            client = window.supabase.createClient(s.url, serviceKey);
+                    // Fetch all employees in the organization to check PIN
+                    const { data: emps, error } = await supabase
+                        .from('employees')
+                        .select('id, organization_id, employee_id, name, role, pin_hash')
+                        .eq('organization_id', currentOrg.id);
+
+                    if (error) throw error;
+
+                    let matchedEmployee = null;
+                    if (emps && emps.length > 0) {
+                        for (const emp of emps) {
+                            if (emp.pin_hash) {
+                                try {
+                                    // Use bcrypt.compareSync to check the PIN against the bcrypt hash
+                                    if (bcrypt && bcrypt.compareSync(pin, emp.pin_hash)) {
+                                        matchedEmployee = emp;
+                                        break;
+                                    }
+                                } catch (e) {
+                                    console.warn('Bcrypt compare error:', e);
+                                }
+                            }
+                            // Fallback to employee_id == pin for backwards compatibility
+                            if (emp.employee_id === pin) {
+                                matchedEmployee = emp;
+                                break;
+                            }
                         }
                     }
 
-                    // Simple PIN hashing: we use SHA-256
-                    const pinHash = await sha256(pin);
-
-                    const { data, error } = await client
-                        .from('employees')
-                        .select('id, organization_id, employee_id, name, role, pin_hash')
-                        .eq('organization_id', currentOrg.id)
-                        .eq('employee_id', pin) // employee_id is the PIN in this flow
-                        .maybeSingle();
-
-                    if (error) throw error;
-                    if (!data) {
+                    if (!matchedEmployee) {
                         pinError.textContent = 'Invalid PIN. Please try again.';
                         pinLoginBtn.disabled = false;
                         pinLoginBtn.textContent = 'Unlock';
                         return;
                     }
 
-                    // In a real app, compare pin_hash. For this demo, we accept the employee_id as the PIN.
-                    // Since employee_id is the PIN, we just check if it matches.
-                    // But we also store pin_hash for future use.
-                    // For now, we treat the employee_id as the PIN.
-                    // Actually, we should compare the hashed PIN with pin_hash.
-                    // But for simplicity in this demo, we'll just check if the employee_id matches the PIN.
-                    // However, the user might have set a different employee_id.
-                    // Let's use the pin_hash comparison.
-
-                    const storedHash = data.pin_hash;
-                    if (storedHash) {
-                        // Compare hashes
-                        if (storedHash !== pinHash) {
-                            pinError.textContent = 'Invalid PIN. Please try again.';
-                            pinLoginBtn.disabled = false;
-                            pinLoginBtn.textContent = 'Unlock';
-                            return;
-                        }
-                    } else {
-                        // If no pin_hash, fallback to employee_id == pin
-                        if (data.employee_id !== pin) {
-                            pinError.textContent = 'Invalid PIN. Please try again.';
-                            pinLoginBtn.disabled = false;
-                            pinLoginBtn.textContent = 'Unlock';
-                            return;
-                        }
-                    }
-
                     // Success
                     const emp = {
-                        id: data.id,
-                        organization_id: data.organization_id,
-                        employee_id: data.employee_id,
-                        name: data.name || data.employee_id,
-                        role: data.role || '',
+                        id: matchedEmployee.id,
+                        organization_id: matchedEmployee.organization_id,
+                        employee_id: matchedEmployee.employee_id,
+                        name: matchedEmployee.name || matchedEmployee.employee_id,
+                        role: matchedEmployee.role || '',
                     };
                     // Store in localStorage
                     localStorage.setItem(STORAGE_EMP_KEY, JSON.stringify(emp));
@@ -1317,6 +1295,8 @@
                 const s = loadSettings();
                 return s ? s.serviceKey : null;
             }
+
+
 
             // ---- DASHBOARD: check punch status ----
             async function checkPunchStatus() {
@@ -1392,11 +1372,18 @@
                     return;
                 }
 
-                // Need selfie
-                if (!capturedImageData) {
-                    showToast('Please capture a selfie first!', 'warning');
+                // Automatically capture current webcam frame
+                if (!cameraActive || !cameraStream) {
+                    showToast('Could not access camera. Please allow permissions.', 'error');
                     return;
                 }
+                const video = selfieVideo;
+                const canvas = document.createElement('canvas');
+                canvas.width = video.videoWidth || 640;
+                canvas.height = video.videoHeight || 480;
+                const ctx = canvas.getContext('2d');
+                ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+                capturedImageData = canvas.toDataURL('image/jpeg', 0.92);
 
                 punchBtn.disabled = true;
                 punchBtnLabel.textContent = 'Processing...';
@@ -1411,11 +1398,8 @@
                     try {
                         imageUrl = await uploadSelfie(capturedImageData, 'in');
                     } catch (uploadErr) {
-                        console.error('Upload error:', uploadErr);
-                        showToast('Failed to upload selfie. Please try again.', 'error');
-                        punchBtn.disabled = false;
-                        punchBtnLabel.textContent = 'Punch In';
-                        return;
+                        console.warn('Storage upload failed, falling back to Base64:', uploadErr);
+                        imageUrl = capturedImageData;
                     }
 
                     // Insert attendance record
@@ -1433,20 +1417,8 @@
 
                     if (error) throw error;
 
-                    currentPunchId = data.id;
-                    isPunchedIn = true;
-                    updatePunchUI(true);
-                    lastPunchTime.textContent = `Punched in at ${new Date(timeStr).toLocaleTimeString()}`;
-
-                    // Reset selfie
-                    capturedImageData = null;
-                    selfieCaptured.style.display = 'none';
-                    selfiePlaceholder.style.display = 'block';
-                    selfieCaptureBtn.disabled = true;
-                    stopCamera();
-                    selfieToggleBtn.textContent = '📷 Start Camera';
-
                     showToast('✅ Punched In successfully!', 'success');
+                    logoutEmployeeOnly();
 
                 } catch (err) {
                     console.error('Punch in error:', err);
@@ -1472,6 +1444,19 @@
             }
 
             async function confirmPunchOut() {
+                // Automatically capture current webcam frame
+                if (!cameraActive || !cameraStream) {
+                    showToast('Could not access camera. Please allow permissions.', 'error');
+                    return;
+                }
+                const video = selfieVideo;
+                const canvas = document.createElement('canvas');
+                canvas.width = video.videoWidth || 640;
+                canvas.height = video.videoHeight || 480;
+                const ctx = canvas.getContext('2d');
+                ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+                capturedImageData = canvas.toDataURL('image/jpeg', 0.92);
+
                 const type = reasonType.value;
                 const detail = reasonDetail.value;
                 let reasonText = type;
@@ -1487,13 +1472,6 @@
                 punchBtnLabel.textContent = 'Processing...';
 
                 try {
-                    // Need selfie for punch out too
-                    if (!capturedImageData) {
-                        showToast('Please capture a selfie for punch out!', 'warning');
-                        punchBtn.disabled = false;
-                        punchBtnLabel.textContent = 'Punch Out';
-                        return;
-                    }
 
                     const now = new Date();
                     const timeStr = now.toISOString();
@@ -1503,11 +1481,8 @@
                     try {
                         imageUrl = await uploadSelfie(capturedImageData, 'out');
                     } catch (uploadErr) {
-                        console.error('Upload error:', uploadErr);
-                        showToast('Failed to upload selfie.', 'error');
-                        punchBtn.disabled = false;
-                        punchBtnLabel.textContent = 'Punch Out';
-                        return;
+                        console.warn('Storage upload failed, falling back to Base64:', uploadErr);
+                        imageUrl = capturedImageData;
                     }
 
                     // Update attendance record
@@ -1523,19 +1498,8 @@
 
                     if (error) throw error;
 
-                    isPunchedIn = false;
-                    updatePunchUI(false);
-                    lastPunchTime.textContent = `Punched out at ${new Date(timeStr).toLocaleTimeString()}`;
-
-                    // Reset selfie
-                    capturedImageData = null;
-                    selfieCaptured.style.display = 'none';
-                    selfiePlaceholder.style.display = 'block';
-                    selfieCaptureBtn.disabled = true;
-                    stopCamera();
-                    selfieToggleBtn.textContent = '📷 Start Camera';
-
                     showToast('✅ Punched Out successfully!', 'success');
+                    logoutEmployeeOnly();
 
                 } catch (err) {
                     console.error('Punch out error:', err);
@@ -1596,8 +1560,6 @@
                     selfiePlaceholder.style.display = 'none';
                     selfieCaptured.style.display = 'none';
                     cameraActive = true;
-                    selfieToggleBtn.textContent = '📷 Stop Camera';
-                    selfieCaptureBtn.disabled = false;
                     capturedImageData = null;
                 } catch (err) {
                     console.error('Camera error:', err);
@@ -1613,49 +1575,9 @@
                 cameraActive = false;
                 selfieVideo.style.display = 'none';
                 selfieVideo.srcObject = null;
-                selfieToggleBtn.textContent = '📷 Start Camera';
-                selfieCaptureBtn.disabled = true;
-                // If we have a captured image, keep it; otherwise show placeholder
                 if (!capturedImageData) {
                     selfiePlaceholder.style.display = 'block';
                     selfieCaptured.style.display = 'none';
-                }
-            }
-
-            function captureSelfie() {
-                if (!cameraActive || !cameraStream) {
-                    showToast('Camera not active. Start the camera first.', 'warning');
-                    return;
-                }
-                const video = selfieVideo;
-                const canvas = document.createElement('canvas');
-                canvas.width = video.videoWidth || 640;
-                canvas.height = video.videoHeight || 480;
-                const ctx = canvas.getContext('2d');
-                ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-                const dataUrl = canvas.toDataURL('image/jpeg', 0.92);
-                capturedImageData = dataUrl;
-                selfieCaptured.src = dataUrl;
-                selfieCaptured.style.display = 'block';
-                selfieVideo.style.display = 'none';
-                selfiePlaceholder.style.display = 'none';
-                showToast('📸 Selfie captured!', 'success', 1500);
-                // Stop camera after capture to save battery
-                stopCamera();
-                selfieToggleBtn.textContent = '📷 Retake';
-                selfieCaptureBtn.disabled = true;
-            }
-
-            function toggleCamera() {
-                if (cameraActive) {
-                    stopCamera();
-                    if (capturedImageData) {
-                        selfieToggleBtn.textContent = '📷 Retake';
-                    } else {
-                        selfieToggleBtn.textContent = '📷 Start Camera';
-                    }
-                } else {
-                    startCamera();
                 }
             }
 
@@ -1784,7 +1706,14 @@
             }
 
             function showDayDetails(dateStr, allData) {
-                const records = allData.filter(r => r.date === dateStr);
+                const records = allData.filter(r => {
+                    if (!r.date) return false;
+                    const rDateStr =
+                        typeof r.date === 'string'
+                            ? r.date.split('T')[0].trim()
+                            : new Date(r.date).toISOString().split('T')[0];
+                    return rDateStr === dateStr;
+                });
                 const list = reportDetailList;
                 if (records.length === 0) {
                     list.innerHTML = `<div style="color:var(--gray-400);text-align:center;padding:12px 0;">No attendance on this day</div>`;
@@ -1894,6 +1823,20 @@
                 showToast('Logged out.', 'info', 1500);
             }
 
+            function logoutEmployeeOnly() {
+                localStorage.removeItem(STORAGE_EMP_KEY);
+                currentEmployee = null;
+                isPunchedIn = false;
+                currentPunchId = null;
+                stopCamera();
+                capturedImageData = null;
+                if (currentOrg) {
+                    goToPin(currentOrg);
+                } else {
+                    goToLogin();
+                }
+            }
+
             // ---- INIT ----
             function init() {
                 // Load settings
@@ -1909,36 +1852,6 @@
 
                 prepopulateOrgCode();
 
-                // Check if employee is already logged in
-                const storedEmp = localStorage.getItem(STORAGE_EMP_KEY);
-                if (storedEmp && supabase) {
-                    try {
-                        const emp = JSON.parse(storedEmp);
-                        // Try to re-login with stored data
-                        // We need the org too
-                        const orgCode = localStorage.getItem(STORAGE_ORG_KEY);
-                        if (orgCode && emp.organization_id) {
-                            // Fetch org name
-                            supabase.from('organizations')
-                                .select('id, org_code, org_name')
-                                .eq('id', emp.organization_id)
-                                .maybeSingle()
-                                .then(({ data }) => {
-                                    if (data) {
-                                        currentOrg = data;
-                                        goToDashboard(emp);
-                                    } else {
-                                        goToLogin();
-                                    }
-                                })
-                                .catch(() => goToLogin());
-                            return;
-                        }
-                    } catch (_) { /* ignore */ }
-                }
-
-                goToLogin();
-
                 // ---- EVENT BINDING ----
                 // Login
                 loginContinueBtn.addEventListener('click', handleOrgContinue);
@@ -1946,7 +1859,10 @@
                 loginSettingsBtn.addEventListener('click', goToSettings);
 
                 // PIN
-                pinBackBtn.addEventListener('click', goToLogin);
+                pinBackBtn.addEventListener('click', () => {
+                    localStorage.removeItem(STORAGE_ORG_KEY);
+                    goToLogin();
+                });
                 pinLoginBtn.addEventListener('click', handlePinLogin);
                 pinInput.addEventListener('input', function() {
                     const val = this.value.replace(/\D/g, '').slice(0, 4);
@@ -1966,9 +1882,7 @@
                 punchBtn.addEventListener('click', handlePunchIn);
                 dashReportBtn.addEventListener('click', goToReport);
 
-                // Selfie
-                selfieToggleBtn.addEventListener('click', toggleCamera);
-                selfieCaptureBtn.addEventListener('click', captureSelfie);
+
 
                 // Report
                 reportBackBtn.addEventListener('click', () => {
@@ -2017,6 +1931,52 @@
                         }
                     }
                 });
+
+                // Check if employee is already logged in
+                const storedEmp = localStorage.getItem(STORAGE_EMP_KEY);
+                if (storedEmp && supabase) {
+                    try {
+                        const emp = JSON.parse(storedEmp);
+                        // Try to re-login with stored data
+                        // We need the org too
+                        const orgCode = localStorage.getItem(STORAGE_ORG_KEY);
+                        if (orgCode && emp.organization_id) {
+                            // Fetch org name
+                            supabase.from('organizations')
+                                .select('id, org_code, org_name')
+                                .eq('id', emp.organization_id)
+                                .maybeSingle()
+                                .then(({ data }) => {
+                                    if (data) {
+                                        currentOrg = data;
+                                        goToDashboard(emp);
+                                    } else {
+                                        goToLogin();
+                                    }
+                                })
+                                .catch(() => goToLogin());
+                            return;
+                        }
+                    } catch (_) { /* ignore */ }
+                }
+
+                const orgCode = localStorage.getItem(STORAGE_ORG_KEY);
+                if (orgCode && supabase) {
+                    supabase.from('organizations')
+                        .select('id, org_code, org_name')
+                        .eq('org_code', orgCode.toUpperCase())
+                        .maybeSingle()
+                        .then(({ data }) => {
+                            if (data) {
+                                goToPin(data);
+                            } else {
+                                goToLogin();
+                            }
+                        })
+                        .catch(() => goToLogin());
+                } else {
+                    goToLogin();
+                }
 
                 console.log('📋 Attendly initialized.');
             }
