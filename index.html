@@ -1808,12 +1808,15 @@
             function logout() {
                 localStorage.removeItem(STORAGE_EMP_KEY);
                 currentEmployee = null;
-                currentOrg = null;
                 isPunchedIn = false;
                 currentPunchId = null;
                 stopCamera();
                 capturedImageData = null;
-                goToLogin();
+                if (currentOrg) {
+                    goToPin(currentOrg);
+                } else {
+                    goToLogin();
+                }
                 showToast('Logged out.', 'info', 1500);
             }
 
