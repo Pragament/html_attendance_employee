@@ -1808,12 +1808,15 @@
             function logout() {
                 localStorage.removeItem(STORAGE_EMP_KEY);
                 currentEmployee = null;
-                currentOrg = null;
                 isPunchedIn = false;
                 currentPunchId = null;
                 stopCamera();
                 capturedImageData = null;
-                goToLogin();
+                if (currentOrg) {
+                    goToPin(currentOrg);
+                } else {
+                    goToLogin();
+                }
                 showToast('Logged out.', 'info', 1500);
             }
 
@@ -2006,33 +2009,7 @@
                     }
                 });
 
-                // Check if employee is already logged in
-                const storedEmp = localStorage.getItem(STORAGE_EMP_KEY);
-                if (storedEmp && supabase) {
-                    try {
-                        const emp = JSON.parse(storedEmp);
-                        // Try to re-login with stored data
-                        // We need the org too
-                        const orgCode = localStorage.getItem(STORAGE_ORG_KEY);
-                        if (orgCode && emp.organization_id) {
-                            // Fetch org name
-                            supabase.from('organizations')
-                                .select('id, org_code, org_name')
-                                .eq('id', emp.organization_id)
-                                .maybeSingle()
-                                .then(({ data }) => {
-                                    if (data) {
-                                        currentOrg = data;
-                                        goToDashboard(emp);
-                                    } else {
-                                        goToLogin();
-                                    }
-                                })
-                                .catch(() => goToLogin());
-                            return;
-                        }
-                    } catch (_) { /* ignore */ }
-                }
+
 
                 const orgCode = localStorage.getItem(STORAGE_ORG_KEY);
                 if (orgCode && supabase) {
