@@ -783,6 +783,9 @@
                     <input id="login-org-code" type="text" placeholder="e.g. ACME123" autocomplete="off" />
                 </div>
                 <button id="login-continue-btn" class="btn btn-primary">Continue →</button>
+                <button id="login-cancel-btn" class="btn btn-ghost btn-sm" style="margin-top:8px;width:auto;align-self:center;display:none;">
+                    Cancel
+                </button>
                 <button id="login-settings-btn" class="btn btn-ghost btn-sm" style="margin-top:12px;width:auto;align-self:center;">
                     ⚙️ Settings
                 </button>
@@ -973,6 +976,7 @@
             const loginOrgInput = $('#login-org-code');
             const loginContinueBtn = $('#login-continue-btn');
             const loginSettingsBtn = $('#login-settings-btn');
+            const loginCancelBtn = $('#login-cancel-btn');
 
             // PIN
             const pinOrgName = $('#pin-org-name');
@@ -1118,7 +1122,15 @@
             // ---- ROUTING ----
             function goToLogin() {
                 showScreen('screen-login');
-                loginOrgInput.value = localStorage.getItem(STORAGE_ORG_KEY) || '';
+                const stored = localStorage.getItem(STORAGE_ORG_KEY);
+                loginOrgInput.value = stored || '';
+                if (loginCancelBtn) {
+                    if (stored && currentOrg) {
+                        loginCancelBtn.style.display = 'block';
+                    } else {
+                        loginCancelBtn.style.display = 'none';
+                    }
+                }
             }
 
             function goToPin(org) {
@@ -1922,10 +1934,16 @@
                 loginContinueBtn.addEventListener('click', handleOrgContinue);
                 loginOrgInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') handleOrgContinue(); });
                 loginSettingsBtn.addEventListener('click', goToSettings);
+                loginCancelBtn?.addEventListener('click', () => {
+                    if (currentOrg) {
+                        goToPin(currentOrg);
+                    } else {
+                        goToLogin();
+                    }
+                });
 
                 // PIN
                 pinBackBtn.addEventListener('click', () => {
-                    localStorage.removeItem(STORAGE_ORG_KEY);
                     goToLogin();
                 });
                 pinLoginBtn.addEventListener('click', handlePinLogin);
